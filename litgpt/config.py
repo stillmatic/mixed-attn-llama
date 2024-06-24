@@ -61,6 +61,10 @@ class Config:
     rope_base: int = 10000
     n_expert: int = 0
     n_expert_per_token: int = 0
+    interleave_attn: bool = False # New: interleave attention layers or not
+    window_size: int = 512  # New: window size for sliding window attention
+    global_attn_interval: int = 6  # New: interval for global attention layers
+
 
     def __post_init__(self):
         if not self.name:
@@ -856,13 +860,14 @@ llama_3 = [
         n_layer=32,
         n_head=32,
         n_query_groups=8,
-        rotary_percentage=1.0,
+        rotary_percentage=4.0,
         parallel_residual=False,
         bias=False,
         norm_class_name="RMSNorm",
         mlp_class_name="LLaMAMLP",
         intermediate_size=14336,
-        rope_base=500000,
+        rope_base=2000000,
+        interleave_attn=True,
     ),
     # https://huggingface.co/meta-llama/Meta-Llama-3-70B/blob/main/config.json
     dict(
