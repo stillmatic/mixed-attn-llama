@@ -860,14 +860,13 @@ llama_3 = [
         n_layer=32,
         n_head=32,
         n_query_groups=8,
-        rotary_percentage=4.0,
+        rotary_percentage=1.0,
         parallel_residual=False,
         bias=False,
         norm_class_name="RMSNorm",
         mlp_class_name="LLaMAMLP",
         intermediate_size=14336,
-        rope_base=2000000,
-        interleave_attn=True,
+        rope_base=500000,
     ),
     # https://huggingface.co/meta-llama/Meta-Llama-3-70B/blob/main/config.json
     dict(
