@@ -152,6 +152,17 @@ def main(
     else:
         load_checkpoint(fabric, state["model"], checkpoint_path)
 
+    # NB chua: since we are hacking back attention, freeze non-attention layers.
+    # TODO: only train SlidingWindowAttention layers based on interleave num logic
+    for name, param in model.named_parameters():
+        print(name)
+        if "attn" not in name:
+            param.requires_grad = False
+
+    print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
+    print(f"Total number of parameters: {num_parameters(model):,}")
+
+
     train_time = time.perf_counter()
     fit(fabric, state, train_dataloader, val_dataloader, devices, resume, checkpoint_dir, out_dir, train, eval, data)
     fabric.print(f"Training time: {(time.perf_counter()-train_time):.2f}s")
