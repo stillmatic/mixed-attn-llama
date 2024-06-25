@@ -170,13 +170,14 @@ class Block(nn.Module):
         self.config = config
 
     def _get_attention_layer(self, config: Config, layer_idx: int) -> nn.Module:
-        if not config.interleave_attn:
-            return CausalSelfAttention(config, is_local=False)
-        # print("Using interleaved attention")
+        # if not config.interleave_attn:
+        #     print("using fully global attn")
+        #     return CausalSelfAttention(config)
+        print("Using interleaved attention")
         if (layer_idx + 1) % config.global_attn_interval == 0:
-            return CausalSelfAttention(config, is_local=False)
+            return CausalSelfAttention(config)
         else:
-            return CausalSelfAttention(config, is_local=True)
+            return SlidingWindowAttention(config)
 
     def forward(
         self,
@@ -214,63 +215,69 @@ class Block(nn.Module):
         return x
 
 
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config: Config, is_local: bool = False) -> None:
+# COPIED FROM XFORMERS
+def _generate_nd_grid(*sizes):
+    coords = [torch.arange(s) for s in sizes]
+    return torch.meshgrid(*coords)
+
+
+def local_nd_distance(*sizes, p=2.0, weights=None):
+    if weights is None:
+        weights = (1,) * len(sizes)
+    assert len(sizes) == len(weights)
+    grid = _generate_nd_grid(*sizes)
+    grid = [i.flatten() * w for i, w in zip(grid, weights)]
+    grid = torch.stack(grid, dim=1).float()
+    d = torch.cdist(grid, grid, p=p)
+    return d
+
+
+def local_nd_pattern(*sizes, distance, p=2.0):
+    d = local_nd_distance(*sizes, p=p)
+    return d < distance
+
+
+def local_1d_pattern(attn_size: int, window_size: int) -> torch.Tensor:
+    assert (
+        window_size % 2 == 1
+    ), "The window size is assumed to be odd (counts self-attention + 2 wings)"
+    h_win_size = window_size // 2 + 1
+    return local_nd_pattern(attn_size, distance=h_win_size, p=1.0)
+
+
+def causal_1d_pattern(attn_size: int) -> torch.Tensor:
+    mask = torch.tril(torch.ones(attn_size, attn_size, dtype=torch.bool))
+    return mask
+
+
+# END COPIED FROM XFORMERS
+
+
+class BaseAttention(nn.Module):
+    def __init__(self, config: Config) -> None:
         super().__init__()
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
-        # key, query, value projections for all heads, but in a batch
         self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
-        # output projection
-        # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
         self.proj = nn.Linear(
             config.head_size * config.n_head, config.n_embd, bias=config.bias
         )
-        # disabled by default
         self.kv_cache: Optional[KVCache] = None
-
         self.config = config
 
-        # if we are operating as a local attn layer
-        if is_local:
-            print("Using local attention")
-        else:
-            print("Using global attention")
-        self.is_local = is_local
-        self.window_size = config.window_size
-        self.attention_mask: Optional[torch.Tensor] = None
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        input_pos: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        # print("forward mask", mask.shape)
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
-
+    def _split_heads(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        B, T, C = x.size()
         qkv = self.attn(x)
-
-        # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
         q_per_kv = self.config.n_head // self.config.n_query_groups
-        total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
+        total_qkv = q_per_kv + 2
         qkv = qkv.view(
             B, T, self.config.n_query_groups, total_qkv, self.config.head_size
         )
-        qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
-
-        # split batched computation into three
+        qkv = qkv.permute(0, 2, 3, 1, 4)
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=2)
 
-        # maybe repeat k and v if for the non multi-head attention cases
-        # training: flash attention requires it
-        # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-        if self.config.n_query_groups != self.config.n_head and (
-            input_pos is None or self.config.n_query_groups != 1
-        ):
+        if self.config.n_query_groups != self.config.n_head:
             k = k.expand(
                 B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
             )
@@ -278,72 +285,29 @@ class CausalSelfAttention(nn.Module):
                 B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
             )
 
-        q = q.reshape(B, -1, T, self.config.head_size)  # (B, nh_q, T, hs)
-        k = k.reshape(B, -1, T, self.config.head_size)  # (B, nh_k, T, hs)
-        v = v.reshape(B, -1, T, self.config.head_size)  # (B, nh_v, T, hs)
+        q = q.reshape(B, -1, T, self.config.head_size)
+        k = k.reshape(B, -1, T, self.config.head_size)
+        v = v.reshape(B, -1, T, self.config.head_size)
 
+        return q, k, v
+
+    def _apply_rope(
+        self, q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
         k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
         q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
         k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
+        return q, k
 
+    def _apply_kv_cache(
+        self, input_pos: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if input_pos is not None:
             if not isinstance(self.kv_cache, KVCache):
                 raise TypeError("You need to call `gpt.set_kv_cache()`")
             k, v = self.kv_cache(input_pos, k, v)
-
-        if self.is_local:
-            y = self.local_attention(q, k, v, mask=mask)
-        else:
-            y = self.scaled_dot_product_attention(q, k, v, mask)
-
-        y = y.reshape(
-            B, T, self.config.head_size * self.config.n_head
-        )  # re-assemble all head outputs side by side
-
-        # output projection
-        return self.proj(y)
-
-    def _get_local_mask(self, shape: torch.Size, block_size: int) -> torch.Tensor:
-        from xformers.components.attention.attention_patterns import (
-            causal_1d_pattern,
-            local_1d_pattern,
-        )
-
-        B, T, C, D = shape
-        window_size = self.window_size * 2 + 1
-        mask = local_1d_pattern(C, window_size)
-        mask &= causal_1d_pattern(C)
-        # mask = maybe_sparsify(mask)
-
-        # for static kv-cache, we need to pad the mask with additional falses so the
-        # result goes from (C, C) to (C, block_size)
-        mask = torch.cat(
-            [mask, torch.zeros(C, block_size - C, dtype=mask.dtype)], dim=1
-        )
-
-        return mask
-
-    def local_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        # Local window attention masking
-        if self.attention_mask is None or self.attention_mask.shape[1] != q.shape[1]:
-            self.attention_mask = self._get_local_mask(
-                q.shape, block_size=k.size(2)
-            ).to(q.device)
-
-        if mask is None:
-            mask = self.attention_mask
-        else:
-            mask = self.attention_mask & mask
-
-        # calculate attention
-        return self.scaled_dot_product_attention(q, k, v, mask)
+        return k, v
 
     def scaled_dot_product_attention(
         self,
@@ -356,8 +320,33 @@ class CausalSelfAttention(nn.Module):
         y = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, scale=scale, is_causal=mask is None
         )
-
         return y.transpose(1, 2)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        input_pos: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        q, k, v = self._split_heads(x)
+        q, k = self._apply_rope(q, k, cos, sin)
+        k, v = self._apply_kv_cache(input_pos, k, v)
+        y = self._attention(q, k, v, mask)
+        y = y.reshape(
+            x.shape[0], x.shape[1], self.config.head_size * self.config.n_head
+        )
+        return self.proj(y)
+
+    def _attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError("Subclasses must implement this method")
 
     def build_kv_cache(
         self,
@@ -383,6 +372,58 @@ class CausalSelfAttention(nn.Module):
                 rope_cache_length + self.config.head_size - self.config.rope_n_elem,
             )
         return KVCache(k_shape, v_shape, device=device, dtype=dtype)
+
+
+class CausalSelfAttention(BaseAttention):
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
+        print("Using global attention")
+
+    def _attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.scaled_dot_product_attention(q, k, v, mask)
+
+
+class SlidingWindowAttention(BaseAttention):
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
+        self.window_size = config.window_size
+        self.attention_mask: Optional[torch.Tensor] = None
+        print("Using local attention")
+
+    def _get_local_mask(self, shape: torch.Size, block_size: int) -> torch.Tensor:
+        B, T, C, D = shape
+        window_size = self.window_size * 2 + 1
+        mask = local_1d_pattern(C, window_size)
+        mask &= causal_1d_pattern(C)
+        mask = torch.cat(
+            [mask, torch.zeros(C, block_size - C, dtype=mask.dtype)], dim=1
+        )
+        return mask
+
+    def _attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.attention_mask is None or self.attention_mask.shape[1] != q.shape[1]:
+            self.attention_mask = self._get_local_mask(
+                q.shape, block_size=k.size(2)
+            ).to(q.device)
+
+        if mask is None:
+            mask = self.attention_mask
+        else:
+            mask = self.attention_mask & mask
+
+        return self.scaled_dot_product_attention(q, k, v, mask)
 
 
 class GptNeoxMLP(nn.Module):
