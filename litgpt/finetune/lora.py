@@ -207,6 +207,7 @@ def main(
     # strict=False because missing keys due to LoRA weights not contained in state dict
     load_checkpoint(fabric, model, checkpoint_path, strict=False)
 
+    print(f"Model loaded from {checkpoint_path}")
     train_time = time.perf_counter()
     fit(
         fabric,
