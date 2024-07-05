@@ -65,6 +65,7 @@ class Config:
     rope_base: int = 10000
     n_expert: int = 0
     n_expert_per_token: int = 0
+    global_attn_interval: Optional[int] = None
 
     def __post_init__(self):
         if not self.name:

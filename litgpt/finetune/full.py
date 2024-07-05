@@ -133,8 +133,28 @@ def main(
     checkpoint_path = checkpoint_dir / "lit_model.pth"
     with fabric.init_module(empty_init=(devices > 1)):
         model = GPT(config)
+    
+    # NB chua: since we are hacking back attention, freeze non-attention layers.
+    # TODO: only train SlidingWindowAttention layers based on interleave num logic
+    print("Setting these as trainable:")
+    for name, param in model.named_parameters():
+        # find layer number
+        if "transformer" not in name:
+            param.requires_grad = False
+            continue
+        proc_name = name.split("transformer.")[1]
+        layer_num = proc_name.split(".")[1]
+        try:
+            layer_num = int(layer_num)
+        except:
+            continue
 
+        param.requires_grad = False
+        if "attn" in name and (layer_num+1) % config.global_attn_interval == 0:
+            print(name)
+            param.requires_grad = True
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
+    fabric.print(f"total number of parameters: {num_parameters(model):,}")
 
     model = fabric.setup(model)
 
