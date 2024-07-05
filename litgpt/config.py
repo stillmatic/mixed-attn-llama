@@ -62,7 +62,7 @@ class Config:
     n_expert: int = 0
     n_expert_per_token: int = 0
     interleave_attn: bool = False # New: interleave attention layers or not
-    window_size: int = 1024  # New: window size for sliding window attention
+    window_size: Optional[int] = None  # New: window size for sliding window attention
     global_attn_interval: int = 6  # New: interval for global attention layers
     query_pre_attention_scaler: Optional[int] = None
 

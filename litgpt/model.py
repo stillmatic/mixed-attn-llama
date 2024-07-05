@@ -11,7 +11,6 @@ from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing_extensions import Self
 
 from litgpt.config import Config
@@ -30,7 +29,7 @@ class GPT(nn.Module):
             dict(
                 wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
                 h=nn.ModuleList(
-                    Block(config, layer_idx=i) for i in range(config.n_layer)
+                    Block(config, block_idx) for block_idx in range(config.n_layer)
                 ),
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
@@ -99,7 +98,7 @@ class GPT(nn.Module):
 
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
-            x = x * (self.config.n_embd**0.5)
+            x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
 
         for block in self.transformer.h:
             x = block(x, cos, sin, mask, input_pos)
@@ -150,7 +149,7 @@ class GPT(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, config: Config, layer_idx: int) -> None:
+    def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         if not config.parallel_residual and config.shared_attention_norm:
             raise NotImplementedError(
@@ -159,7 +158,7 @@ class Block(nn.Module):
             )
 
         self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
-        self.attn = self._get_attention_layer(config, layer_idx)
+        self.attn = CausalSelfAttention(config, block_idx)
         self.norm_2 = (
             None
             if config.shared_attention_norm
@@ -168,9 +167,6 @@ class Block(nn.Module):
         self.mlp = config.mlp_class(config)
 
         self.config = config
-
-    def _get_attention_layer(self, config: Config, layer_idx: int) -> nn.Module:
-        return CausalSelfAttention(config, layer_idx)
 
     def forward(
         self,
@@ -196,6 +192,8 @@ class Block(nn.Module):
         └───► +
         """
 
+        # TODO: prettify norm layers naming (separate PR maybe)
+        # pre_attention_norm, post_attention_norm, pre_mlp_norm, post_mlp_norm ??
         x_normed = self.norm_1(x)
         attention_output = self.attn(x_normed, cos, sin, mask, input_pos)
 
@@ -204,8 +202,8 @@ class Block(nn.Module):
             x = self.mlp(x_normed) + attention_output + x
         else:
             x = attention_output + x
-            x = self.mlp(self.norm_2(x)) + x
         return x
+
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config, block_idx: int) -> None:
@@ -215,9 +213,17 @@ class CausalSelfAttention(nn.Module):
         self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         # output projection
         # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
-        self.proj = nn.Linear(config.head_size * config.n_head, config.n_embd, bias=config.bias)
+        self.proj = nn.Linear(
+            config.head_size * config.n_head, config.n_embd, bias=config.bias
+        )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
+        self.should_use_sliding_window = (
+            config.window_size is not None
+            and (block_idx + 1) % config.global_attn_interval == 0
+        )
+        if self.should_use_sliding_window:
+            print(f"Block {block_idx} will use sliding window attention")
 
         self.config = config
         self.block_idx = block_idx
@@ -230,14 +236,18 @@ class CausalSelfAttention(nn.Module):
         mask: Optional[torch.Tensor] = None,
         input_pos: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         qkv = self.attn(x)
 
         # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
         q_per_kv = self.config.n_head // self.config.n_query_groups
         total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
-        qkv = qkv.view(B, T, self.config.n_query_groups, total_qkv, self.config.head_size)
+        qkv = qkv.view(
+            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+        )
         qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
 
         # split batched computation into three
@@ -246,9 +256,15 @@ class CausalSelfAttention(nn.Module):
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
         # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-        if self.config.n_query_groups != self.config.n_head and (input_pos is None or self.config.n_query_groups != 1):
-            k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
-            v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
+        if self.config.n_query_groups != self.config.n_head and (
+            input_pos is None or self.config.n_query_groups != 1
+        ):
+            k = k.expand(
+                B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
+            )
+            v = v.expand(
+                B, self.config.n_query_groups, q_per_kv, T, self.config.head_size
+            )
 
         q = q.reshape(B, -1, T, self.config.head_size)  # (B, nh_q, T, hs)
         k = k.reshape(B, -1, T, self.config.head_size)  # (B, nh_k, T, hs)
@@ -266,32 +282,47 @@ class CausalSelfAttention(nn.Module):
 
         # TODO: convert it in a registered buffer?
         # In Gemma every other layer has a sliding window attention
-        if self.config.window_size is not None and self.block_idx % self.config.global_attn_interval:
+        if self.should_use_sliding_window:
             # TODO: doesn't look particularly fast (optimized)
             # TODO: deal with device in a prettier way
             if mask is None:
                 min_dtype = torch.finfo(q.dtype).min
-                mask = torch.tril(torch.ones(self.config.block_size, self.config.block_size))
+                mask = torch.tril(
+                    # torch.ones(self.config.block_size, self.config.block_size)
+                    torch.ones(
+                        min(T, self.config.block_size), min(T, self.config.block_size)
+                    )
+                )
                 mask = mask.masked_fill(mask == 0, min_dtype)
 
             min_dtype = torch.finfo(q.dtype).min
             sliding_window_mask = torch.tril(
-                torch.ones_like(mask, dtype=torch.bool), diagonal=-self.config.window_size
+                torch.ones_like(mask, dtype=torch.bool),
+                diagonal=-self.config.window_size,
             )
             mask = torch.where(sliding_window_mask, min_dtype, mask)
             mask = mask.to(q.device)
 
+            # print("q", q.shape, "k", k.shape, "v", v.shape, "mask", mask.shape)
         y = self.scaled_dot_product_attention(q, k, v, mask)
 
-        y = y.reshape(B, T, self.config.head_size * self.config.n_head)  # re-assemble all head outputs side by side
+        y = y.reshape(
+            B, T, self.config.head_size * self.config.n_head
+        )  # re-assemble all head outputs side by side
 
         # output projection
         return self.proj(y)
 
     def scaled_dot_product_attention(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        scale = 1.0 / math.sqrt(self.config.query_pre_attention_scaler or self.config.head_size)
+        scale = 1.0 / math.sqrt(
+            self.config.query_pre_attention_scaler or self.config.head_size
+        )
         y = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, scale=scale, is_causal=mask is None
         )
@@ -309,7 +340,9 @@ class CausalSelfAttention(nn.Module):
         v_shape = (batch_size, heads, max_seq_length, self.config.head_size)
         if rope_cache_length is None:
             if self.config.rotary_percentage != 1.0:
-                raise TypeError("Please pass the `rope_cache_length=gpt.cos.size(-1)` value")
+                raise TypeError(
+                    "Please pass the `rope_cache_length=gpt.cos.size(-1)` value"
+                )
             k_shape = v_shape
         else:
             k_shape = (
@@ -490,12 +523,8 @@ class RMSNorm(torch.nn.Module):
         # NOTE: the original RMSNorm paper implementation is not equivalent
         norm_x = torch.mean(x * x, dim=self.dim, keepdim=True)
         x_normed = x * torch.rsqrt(norm_x + self.eps)
-        x_normed = x_normed.to(dtype=dtype)
-        if self.add_unit_offset:
-            # Gemma model requires a unit offset
-            # https://github.com/google/gemma_pytorch/blob/main/gemma/model.py#L176
-            return x_normed * (1 + self.weight)
-        return x_normed * self.weight
+        weight = (1 + self.weight) if self.add_unit_offset else self.weight
+        return (x_normed * weight.float()).to(dtype=dtype)
 
     def reset_parameters(self) -> None:
         torch.nn.init.ones_(self.weight)

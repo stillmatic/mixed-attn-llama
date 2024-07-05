@@ -163,11 +163,10 @@ def main(
         model = GPT(config)
 
     # NB chua: since we are hacking back attention, freeze non-attention layers.
-    # TODO: only train SlidingWindowAttention layers based on interleave num logic
     for name, param in model.named_parameters():
         # find layer number
+        param.requires_grad = False
         if "transformer" not in name:
-            param.requires_grad = False
             continue
         proc_name = name.split("transformer.")[1]
         layer_num = proc_name.split(".")[1]
@@ -176,7 +175,7 @@ def main(
         except:
             continue
 
-        param.requires_grad = False
+        # only train SlidingWindowAttention layers based on interleave num logic
         if "attn" in name and (layer_num + 1) % config.global_attn_interval == 0:
             print(name)
             param.requires_grad = True
