@@ -512,7 +512,7 @@ class GPT(BaseModel):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
-                h=nn.ModuleList(Block(config) for _ in range(config.n_layer)),
+                h=nn.ModuleList(Block(config, idx) for idx in range(config.n_layer)),
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
         )
@@ -566,10 +566,10 @@ class GPT(BaseModel):
 
 
 class Block(BaseBlock):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, block_idx: int) -> None:
         nn.Module.__init__(self)
         self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config, block_idx)
         if not config.shared_attention_norm:
             self.norm_2 = config.norm_class(config.n_embd, eps=config.norm_eps)
         self.mlp = config.mlp_class(config)
@@ -578,7 +578,7 @@ class Block(BaseBlock):
 
 
 class CausalSelfAttention(BaseCausalSelfAttention):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, block_idx: int) -> None:
         # Skip the parent class __init__ altogether and replace it to avoid
         # useless allocations
         nn.Module.__init__(self)
@@ -609,6 +609,7 @@ class CausalSelfAttention(BaseCausalSelfAttention):
         )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
+        self.block_idx = block_idx
 
         self.config = config
 

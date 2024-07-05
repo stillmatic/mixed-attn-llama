@@ -64,7 +64,7 @@ class Config:
     interleave_attn: bool = False # New: interleave attention layers or not
     window_size: int = 1024  # New: window size for sliding window attention
     global_attn_interval: int = 6  # New: interval for global attention layers
-
+    query_pre_attention_scaler: Optional[int] = None
 
     def __post_init__(self):
         if not self.name:
@@ -1609,6 +1609,7 @@ tiny_llama = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=5632,
         n_query_groups=4,
+        global_attn_interval=4,
     )
 ]
 for c in tiny_llama:

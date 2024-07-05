@@ -121,6 +121,23 @@ class CausalSelfAttention(BaseCausalSelfAttention):
     def scaled_dot_product_attention(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        # TODO: convert it in a registered buffer?
+        # In Gemma every other layer has a sliding window attention
+        if self.config.window_size is not None and self.block_idx % self.config.global_attn_interval:
+            # TODO: doesn't look particularly fast (optimized)
+            # TODO: deal with device in a prettier way
+            if mask is None:
+                min_dtype = torch.finfo(q.dtype).min
+                mask = torch.tril(torch.ones(self.config.block_size, self.config.block_size))
+                mask = mask.masked_fill(mask == 0, min_dtype)
+
+            min_dtype = torch.finfo(q.dtype).min
+            sliding_window_mask = torch.tril(
+                torch.ones_like(mask, dtype=torch.bool), diagonal=-self.config.window_size
+            )
+            mask = torch.where(sliding_window_mask, min_dtype, mask)
+            mask = mask.to(q.device)
+
         y = super().scaled_dot_product_attention(q, k, v, mask)
         if self.block_idx < self.config.adapter_start_layer:
             return y
