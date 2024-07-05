@@ -396,16 +396,6 @@ class SlidingWindowAttention(BaseAttention):
         self.attention_mask: Optional[torch.Tensor] = None
         print("Using local attention")
 
-    def _get_local_mask(self, shape: torch.Size, block_size: int) -> torch.Tensor:
-        B, T, C, D = shape
-        window_size = self.window_size * 2 + 1
-        mask = local_1d_pattern(C, window_size)
-        mask &= causal_1d_pattern(C)
-        mask = torch.cat(
-            [mask, torch.zeros(C, block_size - C, dtype=mask.dtype)], dim=1
-        )
-        return mask
-
     def _attention(
         self,
         q: torch.Tensor,
@@ -413,15 +403,17 @@ class SlidingWindowAttention(BaseAttention):
         v: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.attention_mask is None or self.attention_mask.shape[1] != q.shape[1]:
-            self.attention_mask = self._get_local_mask(
-                q.shape, block_size=k.size(2)
-            ).to(q.device)
-
         if mask is None:
-            mask = self.attention_mask
-        else:
-            mask = self.attention_mask & mask
+            min_dtype = torch.finfo(q.dtype).min
+            mask = torch.tril(torch.ones(self.config.block_size, self.config.block_size))
+            mask = mask.masked_fill(mask == 0, min_dtype)
+
+        min_dtype = torch.finfo(q.dtype).min
+        sliding_window_mask = torch.tril(
+            torch.ones_like(mask, dtype=torch.bool), diagonal=-self.config.window_size
+        )
+        mask = torch.where(sliding_window_mask, min_dtype, mask)
+        mask = mask.to(dtype=q.dtype)
 
         return self.scaled_dot_product_attention(q, k, v, mask)
 

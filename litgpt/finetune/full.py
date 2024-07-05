@@ -136,7 +136,27 @@ def main(
     with fabric.init_module(empty_init=(fabric.world_size > 1)):
         model = GPT(config)
 
+    # NB chua: since we are hacking back attention, freeze non-attention layers.
+    # TODO: only train SlidingWindowAttention layers based on interleave num logic
+    for name, param in model.named_parameters():
+        # find layer number 
+        if "transformer" not in name:
+            param.requires_grad = False
+            continue
+        proc_name = name.split("transformer.")[1]
+        layer_num = proc_name.split(".")[1]
+        try:
+            layer_num = int(layer_num)
+        except:
+            continue
+        
+        param.requires_grad = False
+        if "attn" in name and (layer_num +1 ) % 2 == 0:
+            print(name)
+            param.requires_grad = True
+
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
+    fabric.print(f"Total number of parameters: {num_parameters(model):,}")
 
     model = fabric.setup(model)
 
@@ -151,16 +171,6 @@ def main(
         fabric.load(resume, state)
     else:
         load_checkpoint(fabric, state["model"], checkpoint_path)
-
-    # NB chua: since we are hacking back attention, freeze non-attention layers.
-    # TODO: only train SlidingWindowAttention layers based on interleave num logic
-    for name, param in model.named_parameters():
-        print(name)
-        if "attn" not in name:
-            param.requires_grad = False
-
-    print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
-    print(f"Total number of parameters: {num_parameters(model):,}")
 
 
     train_time = time.perf_counter()
