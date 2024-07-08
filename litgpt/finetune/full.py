@@ -10,8 +10,9 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 import lightning as L
 import torch
 from lightning.fabric.strategies import FSDPStrategy
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import ConcatDataset, DataLoader
 from torchmetrics import RunningMean
+from tqdm import tqdm
 
 from litgpt.args import EvalArgs, TrainArgs
 from litgpt.data import Alpaca, DataModule
@@ -28,9 +29,9 @@ from litgpt.utils import (
     extend_checkpoint_dir,
     find_resume_path,
     get_default_supported_precision,
-    load_checkpoint,
     init_out_dir,
     instantiate_torch_optimizer,
+    load_checkpoint,
     num_parameters,
     parse_devices,
     save_hyperparameters,
@@ -390,14 +391,17 @@ def get_dataloaders(
     train_dataloader, val_dataloader = fabric.setup_dataloaders(train_dataloader, val_dataloader)
     return train_dataloader, val_dataloader
 
-
 def get_longest_seq_length(data: List[Dict]) -> Tuple[int, int]:
-    # find out the minimum max_seq_length required during fine-tuning (saves memory!)
-    lengths = [len(d["input_ids"]) for d in data]
-    longest_seq_length = max(lengths)
-    longest_seq_ix = lengths.index(longest_seq_length)
-    return longest_seq_length, longest_seq_ix
-
+    print("Finding the longest sequence length in the data ...")
+    # Using a single loop to find both the maximum length and its index
+    max_length = -1
+    max_index = -1
+    for i, d in enumerate(tqdm(data)):
+        current_length = len(d["input_ids"])
+        if current_length > max_length:
+            max_length = current_length
+            max_index = i
+    return max_length, max_index
 
 def validate_args(train: TrainArgs, eval: EvalArgs) -> None:
     issues = []

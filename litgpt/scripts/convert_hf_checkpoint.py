@@ -353,7 +353,7 @@ def copy_weights_hf_qwen2(
             if "block_sparse_moe.experts" in name:
                 from_name, e = layer_template(from_name, 5)
             qkv = qkv_weights.setdefault(l, [None, None, None])
-            qkv_bias = qkv_weights.setdefault(l, [None, None, None])
+            qkv_bias = qkv_biases.setdefault(l, [None, None, None])
             if "weight" in name:
                 if "q_proj" in name:
                     qkv[0] = param
@@ -407,6 +407,7 @@ def copy_weights_hf_qwen2(
     # update biases too
     for i, (q, k, v) in list(qkv_biases.items()):
         if q is None or k is None or v is None:
+            print(f"layer {i} q, k, v not found")
             # split across different .bin files
             continue
         q = load_param(q, f"layer {i} q", dtype, verbose=debug_mode)
@@ -418,6 +419,7 @@ def copy_weights_hf_qwen2(
         vs = torch.split(v, config.head_size)
         cycled = [t for group in zip(qs, ks, vs) for t in group]
         qkv = torch.cat(cycled)
+        print(f"layer {i} qkv shape: {qkv.shape}")
         state_dict[f"transformer.h.{i}.attn.attn.bias"] = qkv
         del qkv_biases[i]
         if progress_per_file is not None:

@@ -66,6 +66,7 @@ class Config:
     n_expert: int = 0
     n_expert_per_token: int = 0
     global_attn_interval: Optional[int] = None
+    attn_bias: bool = False
 
     def __post_init__(self):
         if not self.name:
@@ -1729,6 +1730,7 @@ qwen_2_models = [
         n_query_groups=2,
         rope_base=1_000_000,
         n_embd=896,
+        attn_bias=True,
     ),
     # https://huggingface.co/Qwen/Qwen2-0.5B/blob/main/config.json
     dict(
@@ -1747,6 +1749,7 @@ qwen_2_models = [
         n_query_groups=2,
         rope_base=1_000_000,
         n_embd=896,
+        attn_bias=True,
     )
 ]
 configs.extend(qwen_2_models)
