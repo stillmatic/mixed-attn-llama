@@ -334,7 +334,35 @@ class Gemma(PromptStyle):
 class H2Oai(PromptStyle):
     def apply(self, prompt: str, **kwargs: str) -> str:
         return f"<|prompt|>{prompt}</s><|answer|>"
+    
+class Qwen2(PromptStyle):
+    def apply(self, prompt: Union[str, List[Dict[str, str]]], **kwargs: str) -> str:
+        if isinstance(prompt, str):
+            return (
+                "<|im_start|>system\n"
+                "You are a helpful assistant.<|im_end|>\n"
+                "<|im_start|>user\n"
+                f"{prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+        elif isinstance(prompt, list):
+            result = ""
+            for i, message in enumerate(prompt):
+                if i == 0 and message['role'] != 'system':
+                    result += "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+                
+                result += f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
+            
+            result += "<|im_start|>assistant\n"
+            return result
+        else:
+            raise ValueError("Prompt must be either a string or a list of message dictionaries.")
 
+    def stop_tokens(self, tokenizer: "Tokenizer") -> Tuple[List[int], ...]:
+        return (
+            [tokenizer.eos_token_id],
+            tokenizer.encode("<|im_end|>", add_special_tokens=False),
+        )
 
 # Maps prompt style names to PromptStyle classes
 prompt_styles: Dict[str, Type[PromptStyle]] = {
@@ -363,6 +391,7 @@ prompt_styles: Dict[str, Type[PromptStyle]] = {
     "gemma": Gemma,
     "h2oai": H2Oai,
     "llama3": Llama3,
+    "qwen2": Qwen2,
 }
 
 

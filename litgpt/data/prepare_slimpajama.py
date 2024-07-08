@@ -36,13 +36,14 @@ class SlimPajamaDataRecipe(DataChunkRecipe):
 def prepare(
     input_dir: Path = Path("data/SlimPajama-627B/train"),
     output_dir: Path = Path("data/slimpajama/train"),
-    tokenizer_path: Path = Path("checkpoints/Llama-2-7b-hf/"),
+    tokenizer_path: Path = Path("checkpoints/TinyLlama-1.1B-Chat-v1.0/"),
     chunk_size: int = (2049 * 16384),
     fast_dev_run: bool = False,
 ) -> None:
     from litdata.processing.data_processor import DataProcessor
 
     tokenizer_path = extend_checkpoint_dir(tokenizer_path)
+    tokenizer = Tokenizer(tokenizer_path)
     data_recipe = SlimPajamaDataRecipe(tokenizer=tokenizer, chunk_size=chunk_size)
     data_processor = DataProcessor(
         input_dir=str(input_dir),

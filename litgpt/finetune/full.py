@@ -150,7 +150,10 @@ def main(
             continue
 
         param.requires_grad = False
-        if "attn" in name and (layer_num+1) % config.global_attn_interval == 0:
+        # if "attn" not in name and (layer_num+1) % config.global_attn_interval == 0:
+        #     print(f"not tuning {name}?")
+            
+        if ("attn" in name or "mlp" in name) and (layer_num+1) % config.global_attn_interval == 0:
             print(name)
             param.requires_grad = True
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
@@ -264,6 +267,7 @@ def fit(
         running_loss.update(loss.detach())
 
         if not is_accumulating:
+            fabric.clip_gradients(model, optimizer, max_norm=train.max_norm)
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
@@ -397,7 +401,7 @@ def get_longest_seq_length(data: List[Dict]) -> Tuple[int, int]:
 
 def validate_args(train: TrainArgs, eval: EvalArgs) -> None:
     issues = []
-    unsupported = [(train, ["max_tokens", "max_norm", "tie_embeddings", "lr_warmup_fraction"])]
+    unsupported = [(train, ["max_tokens", "tie_embeddings", "lr_warmup_fraction"])]
     for args, names in unsupported:
         for name in names:
             if getattr(args, name) is not None:
