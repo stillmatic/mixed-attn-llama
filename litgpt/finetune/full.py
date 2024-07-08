@@ -9,7 +9,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import lightning as L
 import torch
-from lightning.fabric.strategies import FSDPStrategy
+from lightning.fabric.strategies import FSDPStrategy, DDPStrategy
 from torch.utils.data import ConcatDataset, DataLoader
 from torchmetrics import RunningMean
 from tqdm import tqdm
@@ -99,6 +99,7 @@ def setup(
             limit_all_gathers=True,
             cpu_offload=False,
         )
+        # strategy = DDPStrategy()
     else:
         strategy = "auto"
 
@@ -154,7 +155,9 @@ def main(
         # if "attn" not in name and (layer_num+1) % config.global_attn_interval == 0:
         #     print(f"not tuning {name}?")
             
-        if ("attn" in name or "mlp" in name) and (layer_num+1) % config.global_attn_interval == 0:
+        # if ("attn" in name or "mlp" in name) and (layer_num+1) % config.global_attn_interval == 0:
+        # NB: we train the entire block because FSDP wants to wrap the entire block
+        if (layer_num+1) % config.global_attn_interval == 0:
             print(name)
             param.requires_grad = True
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")

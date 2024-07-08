@@ -1732,7 +1732,7 @@ qwen_2_models = [
         n_embd=896,
         attn_bias=True,
     ),
-    # https://huggingface.co/Qwen/Qwen2-0.5B/blob/main/config.json
+    # https://huggingface.co/Qwen/Qwen2-0.5B-Instruct/blob/main/config.json
     dict(
         name="Qwen2-0.5B-Instruct",
         hf_config=dict(org="Qwen", name="Qwen2-0.5B-Instruct"),
@@ -1750,7 +1750,26 @@ qwen_2_models = [
         rope_base=1_000_000,
         n_embd=896,
         attn_bias=True,
-    )
+    ),
+    # https://huggingface.co/Qwen/Qwen2-1.5B/blob/main/config.json
+    dict(
+        name="Qwen2-1.5B",
+        hf_config=dict(org="Qwen", name="Qwen2-1.5B"),
+        padded_vocab_size=151936,
+        n_layer=28,
+        rotary_percentage=1.0,
+        parallel_residual=False,
+        bias=False,
+        norm_class_name="RMSNorm",
+        norm_eps=1e-06,
+        mlp_class_name="LLaMAMLP",
+        intermediate_size=8960,
+        n_head=12,
+        n_query_groups=2,
+        rope_base=1_000_000,
+        n_embd=1536,
+        attn_bias=True,
+    ), 
 ]
 configs.extend(qwen_2_models)
 

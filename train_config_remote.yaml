@@ -6,10 +6,10 @@ checkpoint_dir: checkpoints/meta-llama/Meta-Llama-3-8B
 out_dir: out/finetune/full-llama-3-8b
 
 # The precision to use for finetuning. Possible choices: "bf16-true", "bf16-mixed", "32-true". (type: Optional[str], default: null)
-precision: bf16-true
+precision: bf16-mixed
 
 # How many devices/GPUs to use (type: Union[int, str], default: 1)
-devices: 4
+devices: 8
 
 # Path to a checkpoint directory to resume from in case training was interrupted, or ``True`` to resume
 # from the latest checkpoint in ``out_dir``. An error will be raised if no checkpoint is found. Passing
@@ -20,6 +20,7 @@ resume: false
 # Data-related arguments. If not provided, the default is ``litgpt.data.Alpaca``.
 data:
   class_path: litgpt.data.Magpie
+  # class_path: litgpt.data.Alpaca
   init_args:
     mask_prompt: false
     prompt_style: llama3
@@ -31,7 +32,7 @@ data:
 train:
 
   # Number of optimizer steps between saving checkpoints (type: Optional[int], default: 1000)
-  save_interval: 200
+  save_interval: 1000
 
   # Number of iterations between logging calls (type: int, default: 1)
   log_interval: 1
@@ -40,10 +41,10 @@ train:
   global_batch_size: 64
 
   # Number of samples per data-parallel rank (type: int, default: 1)
-  micro_batch_size: 2
+  micro_batch_size: 1
 
   # Number of iterations with learning rate warmup active (type: int, default: 100)
-  lr_warmup_steps: 25
+  lr_warmup_steps: 100
 
   # Number of epochs to train on (type: Optional[int], default: 5)
   epochs: 3
@@ -55,7 +56,7 @@ train:
   max_steps:
 
   # Limits the length of samples. Off by default (type: Optional[int], default: null)
-  max_seq_length: 
+  max_seq_length: 8192
 
   # Whether to tie the embedding weights with the language modeling head weights. (type: Optional[bool], default: null)
   tie_embeddings:
